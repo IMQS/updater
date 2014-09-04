@@ -3,7 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/IMQS/updater"
+	"github.com/IMQS/updater/updater"
 	"os"
 )
 
