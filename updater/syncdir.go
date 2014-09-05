@@ -19,6 +19,8 @@ type SyncDir struct {
 	Remote        RemotePath // Remote directory (eg imqsbin@deploy.imqs.co.za:imqsbin/stable)
 	LocalPath     string     // Current directory (eg c:\imqsbin)
 	LocalPathNext string     // Staging directory, where we synchronize to before atomically replacing LocalPath (eg c:\imqsbin_next)
+	beforeSync    func(upd *Updater, syncDir *SyncDir)
+	afterSync     func(upd *Updater, syncDir *SyncDir)
 }
 
 func (s *SyncDir) manifestHashIsReadableAndNew() bool {

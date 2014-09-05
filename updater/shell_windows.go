@@ -8,7 +8,12 @@ import (
 	"strings"
 )
 
-// Mirror src directory to dst
+/* Mirror src directory to dst
+I'm not sure which is best - mirror or swap old & new directory.
+Mirror has the advantage of keeping unchanged files hot in the OS cache.
+Mirror also has the advantage that, when it's finished, you're left with
+two identical copies. This makes us more ready for the next update.
+*/
 func shellMirrorDirectory(src, dst string) (string, error) {
 	//fmt.Printf("-- mirror %v to %v --\n", src, dst)
 	//return nil
