@@ -12,14 +12,15 @@ import (
 	"time"
 )
 
-/* This orchestrates all update operations
+/*
+This orchestrates all update operations.
+
 After creating an Updater, you must load its configuration, an then call Initialize().
 If Initialize() succeeds, then call Run().
 
 Outline of Updater's operation
 
-Updater runs in a continual loop, until it receives a shutdown signal. A shutdown signal
-is either a Ctrl+C, when running on the command line, or a Windows Service STOP event.
+Updater runs in a continual loop, never exiting.
 
 The main loop looks like this:
 
@@ -32,12 +33,12 @@ The main loop looks like this:
 		1.2 If update not available, goto 2
 	2. Sleep for 3 minutes
 
-The 'hash' is a 20 byte SHA1 hash of the entire contents of the directory. It is synchronized
+The 'hash' is a 32 byte SHA256 hash of the entire contents of the directory. It is synchronized
 along with the contents itself. Only if the hash matches, do we proceed with an update.
-The hash is stored in a file callled 'manifest.hash', which is a 40 byte hex-encoded text file containing
-the SHA1 hash.
+The hash is stored in a file callled 'manifest.hash', which is a 64 byte hex-encoded text file containing
+the SHA256 hash.
 
-The step "check if update available" is very cheap, since it only downloads a 40 byte text file.
+The step "check if update available" is very cheap, since it only downloads a 64 byte text file.
 If the hash differs from the current state, then we proceed with a full sync.
 
 */
@@ -50,15 +51,15 @@ type Updater struct {
 // Create a new updater
 func NewUpdater() *Updater {
 	u := new(Updater)
-	u.Config = new(Config)
+	u.Config = NewConfig()
 	u.httpClient = &http.Client{}
-	u.Config.BinDir.beforeSync = beforeSyncBin
-	u.Config.BinDir.afterSync = afterSyncBin
 	return u
 }
 
 // Return an error if we fail to open a log file, etc
 func (u *Updater) Initialize() error {
+	u.Config.BinDir.beforeSync = beforeSyncBin
+	u.Config.BinDir.afterSync = afterSyncBin
 	logPath := u.Config.LogFile + "-a.log"
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0666)
 	if err != nil {
@@ -72,10 +73,14 @@ func (u *Updater) Initialize() error {
 // Run the updater.
 func (u *Updater) Run() {
 	for {
-		u.fetch(&u.Config.BinDir)
-		u.applyIfReady(&u.Config.BinDir)
+		u.runDir(&u.Config.BinDir)
 		time.Sleep(time.Duration(u.Config.CheckIntervalSeconds) * time.Second)
 	}
+}
+
+func (u *Updater) runDir(syncDir *SyncDir) {
+	u.fetch(syncDir)
+	u.applyIfReady(syncDir)
 }
 
 func (u *Updater) fetch(syncDir *SyncDir) {
@@ -90,13 +95,17 @@ func (u *Updater) applyIfReady(syncDir *SyncDir) {
 	isReady, err := syncDir.isReadyToApply()
 	if !isReady {
 		if err != nil {
-			u.log.Printf("cannot apply %v: %v", syncDir.LocalPath, err)
+			u.log.Printf("Cannot apply %v: %v", syncDir.LocalPath, err)
 		}
 		return
 	}
 
 	if syncDir.beforeSync != nil {
-		syncDir.beforeSync(u, syncDir)
+		err = syncDir.beforeSync(u, syncDir)
+		if err != nil {
+			u.log.Printf("Cannot apply %v: (beforeSync error) %v", syncDir.LocalPath, err)
+			return
+		}
 	}
 
 	u.log.Printf("Mirroring %v to %v", syncDir.LocalPathNext, syncDir.LocalPath)
@@ -131,6 +140,15 @@ func (u *Updater) downloadContent(syncDir *SyncDir) {
 	}
 }
 
+/*
+An optimization note on re-using existing files:
+During preparation of 'next', we look for hashes of existing files in 'current'. If we find a file
+in 'current', then we copy it to 'next'. However, if that file already exists in 'next', and
+it's Modification Time and Size are the same as 'current', then we assume that the two files
+are identical. This saves a lot of read bandwidth when performing an incremental update.
+Because we leave 'next' intact from one update to the next, both directories tend to have
+very similar content. The bottom line is that updates touch only what they need to.
+*/
 func (u *Updater) downloadContentHttp(syncDir *SyncDir) error {
 	baseUrl := u.Config.DeployUrl + "/" + syncDir.Remote.Path
 	// Download the manifest
@@ -156,35 +174,9 @@ func (u *Updater) downloadContentHttp(syncDir *SyncDir) error {
 	n_ready := 0
 	n_new := 0
 	n_removed := 0
-	// Retrieve (via copy or download) files in 'next' manifest
-	hashToFile := manifest_prev.hashToFileMap()
-	for _, file := range manifest_next.Files {
-		// NOTE: We might want to disable this expensive check, and instead rely
-		// on the logic inside copyFileIfDateOrSizeDifferent(). With this check in place,
-		// the early-out logic inside copyFileIfDateOrSizeDifferent() will never be utilized.
-		if file.hashEqualsDiskFile(syncDir.LocalPathNext) {
-			n_ready++
-			continue
-		}
-		outFile := path.Join(syncDir.LocalPathNext, file.Name)
-		if err = os.MkdirAll(path.Dir(outFile), 0666); err != nil {
-			return err
-		}
-		prev := hashToFile[file.Hash]
-		if prev != nil {
-			copyFileIfDateOrSizeDifferent(path.Join(syncDir.LocalPath, prev.Name), outFile)
-			n_existing++
-		} else {
-			if err = u.download_file_http(baseUrl+"/"+file.Name, outFile); err != nil {
-				return err
-			}
-			n_new++
-		}
-	}
+	n_removed_dir := 0
+
 	// Delete files not present in 'next' manifest
-	// This would only happen if an update was interrupted while downloading, and then when it
-	// started up again, the server had already moved on. While rare, this is definitely a real-world scenario.
-	// Here we don't care about hashes - we simply want to know which files to delete.
 	manifest_next_ondisk, err := BuildManifestWithoutHashes(syncDir.LocalPathNext)
 	if err != nil {
 		return err
@@ -199,7 +191,49 @@ func (u *Updater) downloadContentHttp(syncDir *SyncDir) error {
 		}
 	}
 
-	u.log.Printf("Finished synchronize. %v files new. %v files existing. %v files ready. %v files removed", n_new, n_existing, n_ready, n_removed)
+	// Delete directories not present in 'next' manifest
+	nameToDir := manifest_next.nameToDirMap()
+	for _, dir := range manifest_next_ondisk.Dirs {
+		if !nameToDir[dir] {
+			if err := os.RemoveAll(path.Join(syncDir.LocalPathNext, dir)); err != nil {
+				return err
+			}
+			n_removed_dir++
+		}
+	}
+
+	// Create directories in 'next' manifest
+	for _, dir := range manifest_next.Dirs {
+		if err := os.MkdirAll(path.Join(syncDir.LocalPathNext, dir), 0666); err != nil {
+			return err
+		}
+	}
+
+	// Retrieve (via copy or download) files in 'next' manifest
+	hashToFile := manifest_prev.hashToFileMap()
+	for _, file := range manifest_next.Files {
+		outFile := path.Join(syncDir.LocalPathNext, file.Name)
+		//if err = os.MkdirAll(path.Dir(outFile), 0666); err != nil {
+		//	return err
+		//}
+		prev := hashToFile[file.Hash]
+		if prev != nil {
+			prevFullPath := path.Join(syncDir.LocalPath, prev.Name)
+			if areFileDatesAndSizesEqual(prevFullPath, outFile) {
+				n_ready++
+			} else {
+				copyFile(prevFullPath, outFile)
+				n_existing++
+			}
+		} else {
+			if err = u.download_file_http(baseUrl+"/"+file.Name, outFile); err != nil {
+				return err
+			}
+			n_new++
+		}
+	}
+
+	u.log.Printf("Finished synchronize. %v files new. %v files existing. %v files ready. %v files removed. %v dirs removed", n_new, n_existing, n_ready, n_removed, n_removed_dir)
 
 	return nil
 }
@@ -222,27 +256,18 @@ func (u *Updater) download_file_http(url, filename string) error {
 	return ioutil.WriteFile(filename, body, 0666)
 }
 
-/* Copies src to dst, but only if dst is non-existent, or src and dst different in size or modification time.
-This seems safe enough. I can't imagine a scenario where this would fail.
-It is a great performance optimization for incremental updates, because unchanged stable files will remain
-untouched in syncDir and syncDir_next.
-*/
-func copyFileIfDateOrSizeDifferent(src, dst string) error {
+func areFileDatesAndSizesEqual(src, dst string) bool {
 	isrc, err := os.Stat(src)
 	if err != nil {
-		return err
+		return false
 	}
 
 	idst, err := os.Stat(dst)
-	if err != nil && !os.IsNotExist(err) {
-		return err
+	if err != nil {
+		return false
 	}
 
-	if isrc.ModTime() == idst.ModTime() && isrc.Size() == idst.Size() {
-		return nil
-	}
-
-	return copyFile(src, dst)
+	return isrc.ModTime() == idst.ModTime() && isrc.Size() == idst.Size()
 }
 
 func copyFile(src, dst string) error {

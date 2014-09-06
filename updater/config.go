@@ -7,11 +7,12 @@ import (
 
 // Updater configuration
 type Config struct {
-	HttpProxy            string
-	DeployUrl            string  // https://deploy.imqs.co.za/files
-	BinDir               SyncDir // c:/imqsbin
-	LogFile              string  // c:/imqsvar/logs/ImqsUpdater. Actual log file is LogFile + ("-a" or "-b")
-	CheckIntervalSeconds float64 // 60 * 5
+	HttpProxy              string
+	DeployUrl              string  // https://deploy.imqs.co.za/files
+	BinDir                 SyncDir // c:/imqsbin
+	LogFile                string  // c:/imqsvar/logs/ImqsUpdater. Actual log file is LogFile + ("-a" or "-b")
+	CheckIntervalSeconds   float64 // 60 * 5
+	ServiceStopWaitSeconds float64 // 30
 }
 
 // Create a new Config with defaults set
@@ -23,6 +24,7 @@ func NewConfig() *Config {
 	c.BinDir.LocalPathNext = "c:/imqsbin_next"
 	c.LogFile = "c:/imqsvar/logs/ImqsUpdater"
 	c.CheckIntervalSeconds = 60 * 5
+	c.ServiceStopWaitSeconds = 30
 	return c
 }
 

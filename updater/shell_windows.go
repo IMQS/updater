@@ -28,6 +28,9 @@ func shellMirrorDirectory(src, dst string) (string, error) {
 
 func interpretRobocopyError(err error) error {
 	const exitMsg = "exit status "
+	if err == nil {
+		return nil
+	}
 	errString := err.Error()
 	if strings.Index(errString, exitMsg) != 0 {
 		return err

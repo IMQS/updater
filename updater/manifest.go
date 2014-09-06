@@ -4,7 +4,7 @@ package updater
 
 import (
 	"bytes"
-	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -20,7 +20,7 @@ var ErrManifestInconsistent = errors.New("Manifest content and hash are inconsis
 
 type ManifestFile struct {
 	Name string // Filename, relative to root
-	Hash string // hex-encoded SHA1 hash of file contents
+	Hash string // hex-encoded SHA256 hash of file contents
 }
 
 // Returns true if the file exists, and its hash is the same as Hash
@@ -29,12 +29,17 @@ func (f *ManifestFile) hashEqualsDiskFile(rootDir string) bool {
 	if err != nil {
 		return false
 	}
-	hash := sha1.Sum(body)
+	hash := sha256.Sum256(body)
 	return hex.EncodeToString(hash[:]) == f.Hash
 }
 
+// This stores enough information for a client to know when the contents of a file tree
+// has been modified. It is necessary to store directories as well as files, so that
+// we avoid corner cases such as the deletion of a directory, and subsequent replacement
+// by a file of the same name.
 type Manifest struct {
 	Files []ManifestFile
+	Dirs  []string
 }
 
 func BuildManifest(rootDir string) (*Manifest, error) {
@@ -127,16 +132,28 @@ func (m *Manifest) nameToFileMap() map[string]*ManifestFile {
 	return res
 }
 
+// Return a map from directory name to bool (values are always 'true')
+func (m *Manifest) nameToDirMap() map[string]bool {
+	res := map[string]bool{}
+	for i := range m.Dirs {
+		res[m.Dirs[i]] = true
+	}
+	return res
+}
+
 // Why not just compute the hash over the JSON encoding?
 // Because at some point, the server might want to start sending additional
 // data inside that JSON envelope, and we wouldn't want a situation where
 // the client thinks he has the wrong data because he still uses the old JSON
 // representation.
 func (m *Manifest) hash() []byte {
-	h := sha1.New()
+	h := sha256.New()
 	for _, file := range m.Files {
 		io.WriteString(h, file.Name)
 		h.Write([]byte(file.Hash))
+	}
+	for _, dir := range m.Dirs {
+		io.WriteString(h, dir)
 	}
 	return h.Sum(nil)
 }
@@ -154,6 +171,7 @@ func (m *Manifest) scanPathRecursive(rootDir, relDir string) error {
 			}
 
 			if item.IsDir() {
+				m.Dirs = append(m.Dirs, relName)
 				if err := m.scanPathRecursive(rootDir, relName); err != nil {
 					return err
 				}
@@ -173,7 +191,7 @@ func (m *Manifest) calculateHashes(rootDir string) error {
 		if bytes, err := ioutil.ReadFile(path.Join(rootDir, m.Files[i].Name)); err != nil {
 			return err
 		} else {
-			hash := sha1.Sum(bytes)
+			hash := sha256.Sum256(bytes)
 			m.Files[i].Hash = hex.EncodeToString(hash[:])
 		}
 	}

@@ -8,8 +8,7 @@ import (
 )
 
 const usageTxt = `commands:
-  buildmanifest <dir>  Update <dir>/hash
-  updatehash <dir>     Build manifest in <dir>
+  buildmanifest <dir>  Update manifest in <dir>
   run                  Run in foreground
   service              Run as a Windows Service
 `
