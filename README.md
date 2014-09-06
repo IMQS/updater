@@ -1,4 +1,4 @@
-updater
-=======
+IMQS Updater
+============
 
-experimental updater
+See [documentation](https://godoc.org/github.com/IMQS/updater/updater) for more.
