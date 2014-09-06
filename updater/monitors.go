@@ -1,5 +1,7 @@
 package updater
 
+// This is the place to put functions that run before and after synchronizing directories
+
 import (
 	"bytes"
 	"errors"
@@ -115,9 +117,16 @@ func beforeSyncBin(upd *Updater, syncDir *SyncDir) error {
 }
 
 func afterSyncBin(upd *Updater, syncDir *SyncDir) {
+
+	// TODO: run install.rb
+
 	services := imqsServiceNames(upd)
 	upd.log.Printf("Starting services (%v)", strings.Join(services, ", "))
 	for _, s := range services {
 		startService(s)
 	}
+
+	// TODO: if imqsbin/bin/imqsupdater.exe is different to imqsvar/bin/imqsupdater.exe, then update ourselves,
+	// perhaps by copying the new imqsupdater.exe to c:\imqsvar\imqsupdater-temp.exe, and then launching that
+	// as "c:\imqsvar\imqsupdater-temp update-self"
 }

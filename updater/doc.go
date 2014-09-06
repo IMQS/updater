@@ -52,6 +52,14 @@ a new release. If the hashes are consistent, then the downloader stops all servi
 and mirrors the staging directory onto the real directory. It then runs install.rb,
 and restarts all services.
 
+Non-sync tasks
+
+Most of the job of the updater is simply to get new files downloaded. However, there
+are other things that need to happen during an update, such as running database migrations.
+The updater manages this by allowing one to define pre-update and post-update functions.
+These two functions are used to perform tasks such as stopping and starting services,
+as well as running our universal install script "install.rb".
+
 Infra-file diffs
 
 It might be worthwhile integrating binary diffs into this system, so that one doesn't need
