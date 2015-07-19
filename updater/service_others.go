@@ -2,6 +2,10 @@
 
 package updater
 
-func RunAsService(handler func()) bool {
+import (
+	"github.com/IMQS/log"
+)
+
+func runService(log *log.Logger, handler func()) bool {
 	return false
 }

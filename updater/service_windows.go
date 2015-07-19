@@ -2,7 +2,7 @@ package updater
 
 import (
 	"code.google.com/p/winsvc/svc"
-	"log"
+	"github.com/IMQS/log"
 )
 
 type myservice struct {
@@ -37,12 +37,10 @@ loop:
 	return
 }
 
-// Returns true if we detected that we are not running in a non-interactive session, and so
-// launched the service. This function will not return until the service exits.
-func RunAsService(handler func()) bool {
+func runService(log *log.Logger, handler func()) bool {
 	interactive, err := svc.IsAnIinteractiveSession()
 	if err != nil {
-		log.Fatalf("failed to determine if we are running in an interactive session: %v", err)
+		log.Errorf("failed to determine if we are running in an interactive session: %v", err)
 		return false
 	}
 	if interactive {

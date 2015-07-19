@@ -3,14 +3,17 @@ package updater
 import (
 	"errors"
 	//"fmt"
+	"github.com/IMQS/log"
 	"io"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"os"
 	"path"
 	"time"
 )
+
+const newDirPerms = 0774
+const newFilePerms = 0664
 
 /*
 This orchestrates all update operations.
@@ -46,79 +49,109 @@ type Updater struct {
 	Config     *Config
 	log        *log.Logger
 	httpClient *http.Client
+	beforeSync func(upd *Updater, updatedDirs []*SyncDir) error
+	afterSync  func(upd *Updater, updatedDirs []*SyncDir)
 }
 
 // Create a new updater
 func NewUpdater() *Updater {
 	u := new(Updater)
 	u.Config = NewConfig()
-	u.httpClient = &http.Client{}
+	u.httpClient = http.DefaultClient
+	u.beforeSync = beforeSyncImqs
+	u.afterSync = afterSyncImqs
 	return u
 }
 
 // Return an error if we fail to open a log file, etc
 func (u *Updater) Initialize() error {
-	u.Config.BinDir.beforeSync = beforeSyncBin
-	u.Config.BinDir.afterSync = afterSyncBin
-	logPath := u.Config.LogFile + "-a.log"
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0666)
-	if err != nil {
-		return errors.New("Unable to open log file '" + logPath + "'")
-	}
-	u.log = log.New(logFile, "Update", log.LstdFlags)
-	u.log.Print("Updater started")
+	u.log = log.New(u.Config.LogFile)
+	//u.log.Level = log.Debug
+	u.log.Info("Updater started")
 	return nil
 }
 
-// Run the updater.
+// Returns true if we detected that we are not running in a non-interactive session, and so
+// launched the service. This function will not return until the service exits.
+func (u *Updater) RunAsService() bool {
+	return runService(u.log, func() {
+		u.Run()
+	})
+}
+
+// Run the updater forever
 func (u *Updater) Run() {
 	for {
-		u.runDir(&u.Config.BinDir)
+		u.Download()
+		u.Apply()
 		time.Sleep(time.Duration(u.Config.CheckIntervalSeconds) * time.Second)
 	}
 }
 
-func (u *Updater) runDir(syncDir *SyncDir) {
-	u.fetch(syncDir)
-	u.applyIfReady(syncDir)
+// Download new content, but do not deploy
+func (u *Updater) Download() {
+	for _, dir := range u.Config.allSyncDirs() {
+		u.fetch(dir)
+	}
 }
 
 func (u *Updater) fetch(syncDir *SyncDir) {
+	// Allow syncing onto a clean system with nothing pre-installed
+	if err := u.ensureDirExists(syncDir.LocalPath); err != nil {
+		u.log.Errorf("Failed to create directory %v: %v", syncDir.LocalPath, err)
+		return
+	}
+	if err := u.ensureDirExists(syncDir.LocalPathNext); err != nil {
+		u.log.Errorf("Failed to create directory %v: %v", syncDir.LocalPathNext, err)
+		return
+	}
+
+	// Actually do the downloading
 	u.downloadHash(syncDir)
 	if syncDir.manifestHashIsReadableAndNew() {
-		u.log.Printf("New content available on %v. Fetching content.", syncDir.LocalPath)
+		u.log.Infof("New content available on %v. Fetching content.", syncDir.LocalPath)
 		u.downloadContent(syncDir)
 	}
 }
 
-func (u *Updater) applyIfReady(syncDir *SyncDir) {
-	isReady, err := syncDir.isReadyToApply()
-	if !isReady {
+// Run the updater once, if new content is ready to deploy
+func (u *Updater) Apply() {
+	ready := []*SyncDir{}
+	for _, dir := range u.Config.allSyncDirs() {
+		isReady, err := dir.isReadyToApply()
 		if err != nil {
-			u.log.Printf("Cannot apply %v: %v", syncDir.LocalPath, err)
+			u.log.Errorf("isReadyToApply failed on %v: %v", dir.LocalPath, err)
+			return
 		}
+		if isReady {
+			ready = append(ready, dir)
+		}
+	}
+	if len(ready) == 0 {
 		return
 	}
 
-	if syncDir.beforeSync != nil {
-		err = syncDir.beforeSync(u, syncDir)
+	if u.beforeSync != nil {
+		err := u.beforeSync(u, ready)
 		if err != nil {
-			u.log.Printf("Cannot apply %v: (beforeSync error) %v", syncDir.LocalPath, err)
+			u.log.Errorf("Cannot apply, beforeSync error: %v", err)
 			return
 		}
 	}
 
-	u.log.Printf("Mirroring %v to %v", syncDir.LocalPathNext, syncDir.LocalPath)
-	msg, err := u.mirrorNextToCurrent(syncDir)
-	if err != nil {
-		u.log.Printf("error mirroring %v to %v: %v", syncDir.LocalPathNext, syncDir.LocalPath, err)
-		u.log.Print(msg)
-		return
+	for _, dir := range ready {
+		u.log.Infof("Mirroring %v to %v", dir.LocalPathNext, dir.LocalPath)
+		msg, err := u.mirrorNextToCurrent(dir)
+		if err != nil {
+			u.log.Errorf("error mirroring %v to %v: %v", dir.LocalPathNext, dir.LocalPath, err)
+			u.log.Errorf("stdout from shell mirror: %v", msg)
+			return
+		}
+		u.log.Info("Mirror successful")
 	}
-	u.log.Printf("Mirror successful")
 
-	if syncDir.afterSync != nil {
-		syncDir.afterSync(u, syncDir)
+	if u.afterSync != nil {
+		u.afterSync(u, ready)
 	}
 }
 
@@ -130,13 +163,13 @@ func (u *Updater) downloadHash(syncDir *SyncDir) {
 	url := u.Config.DeployUrl + "/" + syncDir.Remote.Path + "/" + ManifestFilename_Hash
 	err := u.download_file_http(url, path.Join(syncDir.LocalPathNext, ManifestFilename_Hash))
 	if err != nil {
-		u.log.Printf("Failed to fetch '%v': %v", url, err)
+		u.log.Warnf("Failed to fetch hash: %v", err)
 	}
 }
 
 func (u *Updater) downloadContent(syncDir *SyncDir) {
 	if err := u.downloadContentHttp(syncDir); err != nil {
-		u.log.Printf("Error synchronizing via http: %v", err)
+		u.log.Warnf("Error synchronizing via http: %v", err)
 	}
 }
 
@@ -148,6 +181,10 @@ it's Modification Time and Size are the same as 'current', then we assume that t
 are identical. This saves a lot of read bandwidth when performing an incremental update.
 Because we leave 'next' intact from one update to the next, both directories tend to have
 very similar content. The bottom line is that updates touch only what they need to.
+
+Throughout this function we use two words:
+actual	The files and hashes on disk
+ideal	The files and hashes specified in a JSON manifest file
 */
 func (u *Updater) downloadContentHttp(syncDir *SyncDir) error {
 	baseUrl := u.Config.DeployUrl + "/" + syncDir.Remote.Path
@@ -156,17 +193,17 @@ func (u *Updater) downloadContentHttp(syncDir *SyncDir) error {
 	if err != nil {
 		return err
 	}
-	// Ensure manifest and hash are consistent
+	// Ensure manifest and hash are consistent (ie the two files manifest.content and manifest.hash)
 	if err = isManifestPairConsistent(syncDir.LocalPathNext); err != nil {
 		return err
 	}
 	// Do not attempt to use an old manifest file. Always build the manifest of our old contents from the content itself.
-	manifest_prev, err := BuildManifest(syncDir.LocalPath)
+	actual_manifest_prev, err := BuildManifest(syncDir.LocalPath)
 	if err != nil {
 		return err
 	}
 	// Read the 'next' manifest from file
-	manifest_next, err := ReadManifest(syncDir.LocalPathNext)
+	ideal_manifest_next, err := ReadManifest(syncDir.LocalPathNext)
 	if err != nil {
 		return err
 	}
@@ -177,14 +214,16 @@ func (u *Updater) downloadContentHttp(syncDir *SyncDir) error {
 	n_removed_dir := 0
 
 	// Delete files not present in 'next' manifest
-	manifest_next_ondisk, err := BuildManifestWithoutHashes(syncDir.LocalPathNext)
+	actual_manifest_next, err := BuildManifest(syncDir.LocalPathNext)
 	if err != nil {
 		return err
 	}
-	nameToFile := manifest_next.nameToFileMap()
-	for _, file := range manifest_next_ondisk.Files {
+	nameToFile := ideal_manifest_next.nameToFileMap()
+	for _, file := range actual_manifest_next.Files {
 		if nameToFile[file.Name] == nil {
-			if err := os.Remove(path.Join(syncDir.LocalPathNext, file.Name)); err != nil {
+			fullName := path.Join(syncDir.LocalPathNext, file.Name)
+			u.log.Debugf("Deleting %v", fullName)
+			if err := os.Remove(fullName); err != nil {
 				return err
 			}
 			n_removed++
@@ -192,10 +231,12 @@ func (u *Updater) downloadContentHttp(syncDir *SyncDir) error {
 	}
 
 	// Delete directories not present in 'next' manifest
-	nameToDir := manifest_next.nameToDirMap()
-	for _, dir := range manifest_next_ondisk.Dirs {
+	nameToDir := ideal_manifest_next.nameToDirMap()
+	for _, dir := range actual_manifest_next.Dirs {
 		if !nameToDir[dir] {
-			if err := os.RemoveAll(path.Join(syncDir.LocalPathNext, dir)); err != nil {
+			fullName := path.Join(syncDir.LocalPathNext, dir)
+			u.log.Debugf("Deleting directory %v", fullName)
+			if err := os.RemoveAll(fullName); err != nil {
 				return err
 			}
 			n_removed_dir++
@@ -203,29 +244,40 @@ func (u *Updater) downloadContentHttp(syncDir *SyncDir) error {
 	}
 
 	// Create directories in 'next' manifest
-	for _, dir := range manifest_next.Dirs {
-		if err := os.MkdirAll(path.Join(syncDir.LocalPathNext, dir), 0666); err != nil {
-			return err
+	for _, dir := range ideal_manifest_next.Dirs {
+		fullName := path.Join(syncDir.LocalPathNext, dir)
+		if _, err := os.Stat(fullName); err != nil {
+			u.log.Debugf("Creating directory %v", fullName)
+			if err := u.ensureDirExists(fullName); err != nil {
+				return err
+			}
 		}
 	}
 
 	// Retrieve (via copy or download) files in 'next' manifest
-	hashToFile := manifest_prev.hashToFileMap()
-	for _, file := range manifest_next.Files {
+	actual_hashToFilePrev := actual_manifest_prev.hashToFileMap()
+	actual_hashToFileNext := actual_manifest_next.hashToFileMap()
+	for _, file := range ideal_manifest_next.Files {
 		outFile := path.Join(syncDir.LocalPathNext, file.Name)
-		//if err = os.MkdirAll(path.Dir(outFile), 0666); err != nil {
-		//	return err
-		//}
-		prev := hashToFile[file.Hash]
-		if prev != nil {
-			prevFullPath := path.Join(syncDir.LocalPath, prev.Name)
+		actual_prev := actual_hashToFilePrev[file.Hash]
+		actual_next := actual_hashToFileNext[file.Hash]
+		if actual_prev != nil {
+			prevFullPath := path.Join(syncDir.LocalPath, actual_prev.Name)
 			if areFileDatesAndSizesEqual(prevFullPath, outFile) {
+				u.log.Debugf("%v satisfied by %v", outFile, prevFullPath)
 				n_ready++
 			} else {
-				copyFile(prevFullPath, outFile)
+				u.log.Debugf("Copying %v to %v", prevFullPath, outFile)
+				if err := copyFile(prevFullPath, outFile); err != nil {
+					return err
+				}
 				n_existing++
 			}
+		} else if actual_next != nil && actual_next.Name == file.Name {
+			u.log.Debugf("%v already downloaded", file.Name)
+			n_ready++
 		} else {
+			u.log.Debugf("Downloading %v", file.Name)
 			if err = u.download_file_http(baseUrl+"/"+file.Name, outFile); err != nil {
 				return err
 			}
@@ -233,7 +285,7 @@ func (u *Updater) downloadContentHttp(syncDir *SyncDir) error {
 		}
 	}
 
-	u.log.Printf("Finished synchronize. %v files new. %v files existing. %v files ready. %v files removed. %v dirs removed", n_new, n_existing, n_ready, n_removed, n_removed_dir)
+	u.log.Infof("Download complete. %v files new. %v files existing. %v files ready. %v files removed. %v dirs removed", n_new, n_existing, n_ready, n_removed, n_removed_dir)
 
 	return nil
 }
@@ -253,7 +305,15 @@ func (u *Updater) download_file_http(url, filename string) error {
 		return err
 	}
 
-	return ioutil.WriteFile(filename, body, 0666)
+	return ioutil.WriteFile(filename, body, newFilePerms)
+}
+
+func (u *Updater) ensureDirExists(dir string) error {
+	_, err := os.Stat(dir)
+	if os.IsNotExist(err) {
+		return os.MkdirAll(dir, newDirPerms|os.ModeDir)
+	}
+	return err
 }
 
 func areFileDatesAndSizesEqual(src, dst string) bool {

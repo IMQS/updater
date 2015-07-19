@@ -86,9 +86,9 @@ func isServiceRunning(name string) bool {
 	return true
 }
 
-func beforeSyncBin(upd *Updater, syncDir *SyncDir) error {
+func beforeSyncImqs(upd *Updater, updatedDirs []*SyncDir) error {
 	services := imqsServiceNames(upd)
-	upd.log.Printf("Stopping services (%v)", strings.Join(services, ", "))
+	upd.log.Infof("Stopping services (%v)", strings.Join(services, ", "))
 	for _, s := range services {
 		stopService(s)
 	}
@@ -101,11 +101,11 @@ func beforeSyncBin(upd *Updater, syncDir *SyncDir) error {
 			}
 		}
 		if len(running) == 0 {
-			upd.log.Printf("All services stopped")
+			upd.log.Infof("All services stopped")
 			break
 		}
 		if time.Now().Sub(start) > time.Second*time.Duration(upd.Config.ServiceStopWaitSeconds) {
-			upd.log.Printf("Abandoning update, because services (%v) are not stopping (timeout %vs)", strings.Join(running, ", "), upd.Config.ServiceStopWaitSeconds)
+			upd.log.Errorf("Abandoning update, because services (%v) are not stopping (timeout %vs)", strings.Join(running, ", "), upd.Config.ServiceStopWaitSeconds)
 			for _, s := range services {
 				startService(s)
 			}
@@ -116,12 +116,12 @@ func beforeSyncBin(upd *Updater, syncDir *SyncDir) error {
 	return nil
 }
 
-func afterSyncBin(upd *Updater, syncDir *SyncDir) {
+func afterSyncImqs(upd *Updater, updatedDirs []*SyncDir) {
 
 	// TODO: run install.rb
 
 	services := imqsServiceNames(upd)
-	upd.log.Printf("Starting services (%v)", strings.Join(services, ", "))
+	upd.log.Infof("Starting services (%v)", strings.Join(services, ", "))
 	for _, s := range services {
 		startService(s)
 	}

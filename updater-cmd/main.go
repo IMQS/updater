@@ -9,8 +9,10 @@ import (
 
 const usageTxt = `commands:
   buildmanifest <dir>  Update manifest in <dir>
-  run                  Run in foreground
+  run                  Run in foreground (in console)
   service              Run as a Windows Service
+  download             Check for new content, and download
+  apply                If an update is ready to be applied, then do so
 `
 
 func main() {
@@ -43,7 +45,7 @@ func main() {
 
 	upd := updater.NewUpdater()
 
-	initSvc := func() {
+	init := func() {
 		if *flagConfig == "" {
 			helpDie("No config specified")
 		} else if err := upd.Config.LoadFile(*flagConfig); err != nil {
@@ -53,10 +55,6 @@ func main() {
 		if err := upd.Initialize(); err != nil {
 			helpDie(err.Error())
 		}
-	}
-
-	run := func() {
-		upd.Run()
 	}
 
 	if cmd == "buildmanifest" {
@@ -72,13 +70,17 @@ func main() {
 			}
 		}
 	} else if cmd == "run" {
-		initSvc()
-		fmt.Printf("Starting\n")
-		run()
+		init()
+		upd.Run()
+	} else if cmd == "download" {
+		init()
+		upd.Download()
+	} else if cmd == "apply" {
+		init()
+		upd.Apply()
 	} else if cmd == "service" {
-		initSvc()
-		fmt.Printf("Starting as service\n")
-		if !updater.RunAsService(run) {
+		init()
+		if !upd.RunAsService() {
 			fmt.Printf("Unable to run as service\n")
 		}
 	} else if cmd == "" {

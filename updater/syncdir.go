@@ -9,9 +9,9 @@ import (
 
 // Remote directory
 type RemotePath struct {
-	Username string
-	Password string
-	Path     string
+	Username string // Sent via HTTP BASIC authorization
+	Password string // Sent via HTTP BASIC authorization
+	Path     string // Typically a URL (eg https://deploy.imqs.co.za/files/stable)
 }
 
 // A directory that is synchronized
@@ -19,8 +19,6 @@ type SyncDir struct {
 	Remote        RemotePath // Remote directory (eg imqsbin@deploy.imqs.co.za:imqsbin/stable)
 	LocalPath     string     // Current directory (eg c:\imqsbin)
 	LocalPathNext string     // Staging directory, where we synchronize to before atomically replacing LocalPath (eg c:\imqsbin_next)
-	beforeSync    func(upd *Updater, syncDir *SyncDir) error
-	afterSync     func(upd *Updater, syncDir *SyncDir)
 }
 
 func (s *SyncDir) manifestHashIsReadableAndNew() bool {
