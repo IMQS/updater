@@ -212,6 +212,7 @@ func (u *Updater) downloadContentHttp(syncDir *SyncDir) error {
 	n_new := 0
 	n_removed := 0
 	n_removed_dir := 0
+	bytes_downloaded := 0
 
 	// Delete files not present in 'next' manifest
 	actual_manifest_next, err := BuildManifest(syncDir.LocalPathNext)
@@ -281,11 +282,15 @@ func (u *Updater) downloadContentHttp(syncDir *SyncDir) error {
 			if err = u.download_file_http(baseUrl+"/"+file.Name, outFile); err != nil {
 				return err
 			}
+			if bytes, err := getFileSize(outFile); err != nil {
+				return err
+			}
+			bytes_downloaded += bytes
 			n_new++
 		}
 	}
 
-	u.log.Infof("Download complete. %v files new. %v files existing. %v files ready. %v files removed. %v dirs removed", n_new, n_existing, n_ready, n_removed, n_removed_dir)
+	u.log.Infof("Download complete. %v files new (%v bytes). %v files existing. %v files ready. %v files removed. %v dirs removed", n_new, bytes_downloaded, n_existing, n_ready, n_removed, n_removed_dir)
 
 	return nil
 }
@@ -314,6 +319,14 @@ func (u *Updater) ensureDirExists(dir string) error {
 		return os.MkdirAll(dir, newDirPerms|os.ModeDir)
 	}
 	return err
+}
+
+func getFileSize(filename string) (int64, error) {
+	stat, err := os.Stat(filename)
+	if err != nil {
+		return 0, err
+	}
+	return stat.Size(), nil
 }
 
 func areFileDatesAndSizesEqual(src, dst string) bool {

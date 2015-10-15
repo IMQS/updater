@@ -42,5 +42,10 @@ func (c *Config) LoadFile(filename string) error {
 }
 
 func (c *Config) allSyncDirs() []*SyncDir {
-	return []*SyncDir{&c.BinDir, &c.ConfDir}
+	if c.ConfDir.LocalPath != "" {
+		return []*SyncDir{&c.BinDir, &c.ConfDir}
+	} else {
+		// This path is here for testing, when I had no conf dir setup
+		return []*SyncDir{&c.BinDir}
+	}
 }
